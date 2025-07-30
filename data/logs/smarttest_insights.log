@@ -1,0 +1,6 @@
+2025-07-30 22:37:09,344 - __main__ - INFO - Initializing Smart Test Insight Generator...
+2025-07-30 22:37:10,078 - backend.database.database - INFO - Database engine created successfully: sqlite:///smarttest_insights.db
+2025-07-30 22:37:10,258 - backend.database.database - INFO - Database tables created successfully
+2025-07-30 22:37:10,259 - __main__ - INFO - Database initialized successfully
+2025-07-30 22:37:10,302 - __main__ - INFO - Data directories created/verified
+2025-07-30 22:37:10,308 - backend.database.database - INFO - Database connections closed

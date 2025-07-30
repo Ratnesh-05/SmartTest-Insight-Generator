@@ -1,0 +1,2 @@
+Label,# Samples,Average,Median,90% Line,95% Line,99% Line,Min,Max,Error %,Throughput,Received KB/sec,Sent KB/sec
+TOTAL,48040,18809,21777,28595,31107,36283,108,56605,0.39%,25.85654,33.23,62.24
