@@ -12,6 +12,8 @@ import json
 from datetime import datetime
 import base64
 import pandas as pd
+import io
+import random
 
 # Add backend to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -438,6 +440,339 @@ def generate_report():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/reports/comparison', methods=['POST'])
+def generate_comparison_report():
+    """Generate comparison report between two test runs"""
+    try:
+        data = request.get_json()
+        file_a_path = data.get('file_a_path')
+        file_b_path = data.get('file_b_path')
+        report_format = data.get('format', 'pdf')
+        
+        if not file_a_path or not file_b_path:
+            return jsonify({'error': 'Both files are required for comparison'}), 400
+        
+        if not os.path.exists(file_a_path) or not os.path.exists(file_b_path):
+            return jsonify({'error': 'One or both files not found'}), 404
+        
+        # Process both files
+        processor = PerformanceDataProcessor()
+        
+        # Load data from both files
+        df_a = processor.load_test_data(file_a_path)
+        metrics_a = processor.calculate_basic_metrics()
+        print(f"DEBUG: Metrics A structure: {metrics_a}")
+        
+        processor_b = PerformanceDataProcessor()
+        df_b = processor_b.load_test_data(file_b_path)
+        metrics_b = processor_b.calculate_basic_metrics()
+        print(f"DEBUG: Metrics B structure: {metrics_b}")
+        
+        # Convert metrics to ensure numeric values and flatten structure
+        def convert_metrics(metrics):
+            """Convert metrics to ensure all values are numeric and flatten structure"""
+            converted = {}
+            print(f"DEBUG: Converting metrics: {metrics}")
+            for key, value in metrics.items():
+                print(f"DEBUG: Processing key '{key}' with value '{value}' (type: {type(value)})")
+                if isinstance(value, dict):
+                    # Flatten nested metrics
+                    for sub_key, sub_value in value.items():
+                        flat_key = f"{key}_{sub_key}"
+                        try:
+                            converted[flat_key] = float(sub_value) if sub_value is not None else 0.0
+                            print(f"DEBUG: Converted {flat_key} = {converted[flat_key]}")
+                        except (ValueError, TypeError) as e:
+                            print(f"DEBUG: Error converting {flat_key}: {e}")
+                            converted[flat_key] = 0.0
+                else:
+                    try:
+                        converted[key] = float(value) if value is not None else 0.0
+                        print(f"DEBUG: Converted {key} = {converted[key]}")
+                    except (ValueError, TypeError) as e:
+                        print(f"DEBUG: Error converting {key}: {e}")
+                        converted[key] = 0.0
+            print(f"DEBUG: Final converted metrics: {converted}")
+            return converted
+        
+        metrics_a_converted = convert_metrics(metrics_a)
+        metrics_b_converted = convert_metrics(metrics_b)
+        
+        # Generate comparison analysis
+        comparison_data = {
+            'test_a': {
+                'name': os.path.basename(file_a_path),
+                'metrics': metrics_a_converted,
+                'data_summary': processor.get_data_summary()
+            },
+            'test_b': {
+                'name': os.path.basename(file_b_path),
+                'metrics': metrics_b_converted,
+                'data_summary': processor_b.get_data_summary()
+            },
+            'comparison': {
+                'response_time_diff': metrics_a_converted.get('response_time_mean', 0) - metrics_b_converted.get('response_time_mean', 0),
+                'error_rate_diff': metrics_a_converted.get('errors_error_rate', 0) - metrics_b_converted.get('errors_error_rate', 0),
+                'throughput_diff': metrics_a_converted.get('throughput_mean', 0) - metrics_b_converted.get('throughput_mean', 0),
+                'improvement_percentage': calculate_improvement_percentage(metrics_a_converted, metrics_b_converted)
+            }
+        }
+        
+        if report_format == 'pdf':
+            # Generate PDF comparison report
+            pdf_content = create_comparison_pdf_report(comparison_data)
+            
+            response = send_file(
+                io.BytesIO(pdf_content),
+                mimetype='application/pdf',
+                as_attachment=True,
+                download_name='comparison_report.pdf'
+            )
+            return response
+            
+        elif report_format == 'excel':
+            # Generate Excel comparison report
+            excel_generator = ExcelReportGenerator()
+            excel_content = excel_generator.generate_comparison_report(comparison_data)
+            
+            response = send_file(
+                io.BytesIO(excel_content),
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                as_attachment=True,
+                download_name='comparison_report.xlsx'
+            )
+            return response
+            
+        else:
+            return jsonify({'error': 'Unsupported format'}), 400
+            
+    except Exception as e:
+        import traceback
+        print(f"ERROR in comparison report: {e}")
+        print(f"Traceback: {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+def calculate_improvement_percentage(metrics_a, metrics_b):
+    """Calculate improvement percentage between two test runs"""
+    try:
+        # Use flattened metrics structure
+        avg_a = float(metrics_a.get('response_time_mean', 0))
+        avg_b = float(metrics_b.get('response_time_mean', 0))
+        
+        if avg_b == 0:
+            return 0
+        
+        improvement = ((avg_b - avg_a) / avg_b) * 100
+        return round(improvement, 2)
+    except Exception as e:
+        print(f"Error calculating improvement: {e}")
+        print(f"Metrics A: {metrics_a}")
+        print(f"Metrics B: {metrics_b}")
+        return 0
+
+def create_comparison_pdf_report(comparison_data):
+    """Create a detailed PDF comparison report"""
+    from reportlab.lib.pagesizes import letter, A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    
+    # Create PDF buffer
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
+    
+    # Styles
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        spaceAfter=30,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#1f2937')
+    )
+    
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=16,
+        spaceAfter=12,
+        textColor=colors.HexColor('#374151')
+    )
+    
+    normal_style = ParagraphStyle(
+        'CustomNormal',
+        parent=styles['Normal'],
+        fontSize=11,
+        spaceAfter=6
+    )
+    
+    # Build PDF content
+    story = []
+    
+    # Title
+    story.append(Paragraph("Performance Test Comparison Report", title_style))
+    story.append(Spacer(1, 20))
+    
+    # Executive Summary
+    story.append(Paragraph("Executive Summary", heading_style))
+    story.append(Paragraph(
+        f"This report compares two performance test runs: {comparison_data['test_a']['name']} vs {comparison_data['test_b']['name']}. "
+        f"The analysis shows key performance differences and recommendations for optimization.",
+        normal_style
+    ))
+    story.append(Spacer(1, 12))
+    
+    # Comparison Table
+    comparison_table_data = [
+        ['Metric', 'Test A', 'Test B', 'Difference', 'Improvement'],
+        ['Avg Response Time (ms)', 
+         f"{comparison_data['test_a']['metrics'].get('avg_response_time', 0):.2f}",
+         f"{comparison_data['test_b']['metrics'].get('avg_response_time', 0):.2f}",
+         f"{comparison_data['comparison']['response_time_diff']:.2f}",
+         f"{comparison_data['comparison']['improvement_percentage']:.1f}%"],
+        ['Error Rate (%)',
+         f"{comparison_data['test_a']['metrics'].get('error_rate', 0):.2f}",
+         f"{comparison_data['test_b']['metrics'].get('error_rate', 0):.2f}",
+         f"{comparison_data['comparison']['error_rate_diff']:.2f}",
+         "N/A"],
+        ['Throughput (req/s)',
+         f"{comparison_data['test_a']['metrics'].get('throughput', 0):.2f}",
+         f"{comparison_data['test_b']['metrics'].get('throughput', 0):.2f}",
+         f"{comparison_data['comparison']['throughput_diff']:.2f}",
+         "N/A"]
+    ]
+    
+    comparison_table = Table(comparison_table_data, colWidths=[1.5*inch, 1*inch, 1*inch, 1*inch, 1*inch])
+    comparison_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f3f4f6')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1f2937')),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#ffffff')),
+        ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#d1d5db')),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 10),
+        ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    
+    story.append(comparison_table)
+    story.append(Spacer(1, 20))
+    
+    # Detailed Analysis
+    story.append(Paragraph("Detailed Analysis", heading_style))
+    
+    # Test A Details
+    story.append(Paragraph(f"Test A: {comparison_data['test_a']['name']}", heading_style))
+    test_a_metrics = comparison_data['test_a']['metrics']
+    test_a_data = [
+        ['Metric', 'Value'],
+        ['Average Response Time', f"{test_a_metrics.get('avg_response_time', 0):.2f} ms"],
+        ['Maximum Response Time', f"{test_a_metrics.get('max_response_time', 0):.2f} ms"],
+        ['Minimum Response Time', f"{test_a_metrics.get('min_response_time', 0):.2f} ms"],
+        ['Error Rate', f"{test_a_metrics.get('error_rate', 0):.2f}%"],
+        ['Throughput', f"{test_a_metrics.get('throughput', 0):.2f} req/s"],
+        ['Total Requests', f"{test_a_metrics.get('total_requests', 0)}"]
+    ]
+    
+    test_a_table = Table(test_a_data, colWidths=[2*inch, 1.5*inch])
+    test_a_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#dbeafe')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8fafc')),
+        ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e2e8f0')),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 10),
+        ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    
+    story.append(test_a_table)
+    story.append(Spacer(1, 15))
+    
+    # Test B Details
+    story.append(Paragraph(f"Test B: {comparison_data['test_b']['name']}", heading_style))
+    test_b_metrics = comparison_data['test_b']['metrics']
+    test_b_data = [
+        ['Metric', 'Value'],
+        ['Average Response Time', f"{test_b_metrics.get('avg_response_time', 0):.2f} ms"],
+        ['Maximum Response Time', f"{test_b_metrics.get('max_response_time', 0):.2f} ms"],
+        ['Minimum Response Time', f"{test_b_metrics.get('min_response_time', 0):.2f} ms"],
+        ['Error Rate', f"{test_b_metrics.get('error_rate', 0):.2f}%"],
+        ['Throughput', f"{test_b_metrics.get('throughput', 0):.2f} req/s"],
+        ['Total Requests', f"{test_b_metrics.get('total_requests', 0)}"]
+    ]
+    
+    test_b_table = Table(test_b_data, colWidths=[2*inch, 1.5*inch])
+    test_b_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#fef3c7')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#d97706')),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#fefce8')),
+        ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#fde68a')),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 10),
+        ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    
+    story.append(test_b_table)
+    story.append(Spacer(1, 20))
+    
+    # Recommendations
+    story.append(Paragraph("Recommendations", heading_style))
+    
+    improvement = comparison_data['comparison']['improvement_percentage']
+    if improvement > 0:
+        recommendation_text = f"Test B shows a {improvement:.1f}% improvement in response time compared to Test A. "
+        recommendation_text += "This indicates positive performance optimization."
+    elif improvement < 0:
+        recommendation_text = f"Test B shows a {abs(improvement):.1f}% degradation in response time compared to Test A. "
+        recommendation_text += "Further investigation is recommended to identify performance bottlenecks."
+    else:
+        recommendation_text = "Both tests show similar performance characteristics. "
+        recommendation_text += "Consider running additional tests with different parameters."
+    
+    story.append(Paragraph(recommendation_text, normal_style))
+    story.append(Spacer(1, 12))
+    
+    # Additional recommendations
+    additional_recommendations = [
+        "• Monitor system resources during peak load periods",
+        "• Implement caching strategies for frequently accessed data",
+        "• Optimize database queries and connection pooling",
+        "• Consider horizontal scaling for better performance",
+        "• Set up automated performance monitoring and alerting"
+    ]
+    
+    for rec in additional_recommendations:
+        story.append(Paragraph(rec, normal_style))
+    
+    story.append(Spacer(1, 20))
+    
+    # Footer
+    story.append(Paragraph(
+        f"Report generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by Perf Pulse",
+        ParagraphStyle('Footer', parent=styles['Normal'], fontSize=9, textColor=colors.grey)
+    ))
+    
+    # Build PDF
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 def create_html_report(report_data):
     """Create HTML report content"""
     metrics = report_data.get('metrics', {})
@@ -509,6 +844,310 @@ def get_demo_data():
             return jsonify({'error': 'Demo data not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+def generate_enhanced_charts(df, metrics, analysis_results):
+    """Generate enhanced chart data for advanced visualizations"""
+    try:
+        charts = {}
+        
+        # Response Time Distribution (Histogram with gradient)
+        if 'response_time' in df.columns:
+            rt_data = df['response_time'].dropna()
+            charts['response_time_distribution'] = {
+                'type': 'histogram',
+                'data': {
+                    'x': rt_data.tolist(),
+                    'nbinsx': 25,
+                    'name': 'Response Time Distribution',
+                    'marker': {
+                        'color': rt_data.tolist(),
+                        'colorscale': 'Viridis',
+                        'showscale': True
+                    }
+                },
+                'layout': {
+                    'title': {'text': 'Response Time Distribution', 'font': {'size': 20, 'color': '#1f2937'}},
+                    'xaxis': {'title': 'Response Time (ms)', 'gridcolor': '#e5e7eb'},
+                    'yaxis': {'title': 'Frequency', 'gridcolor': '#e5e7eb'},
+                    'plot_bgcolor': '#ffffff',
+                    'paper_bgcolor': '#ffffff',
+                    'bargap': 0.05,
+                    'showlegend': False
+                }
+            }
+        
+        # Response Time Over Time (Animated Line Chart)
+        if 'timestamp' in df.columns and 'response_time' in df.columns:
+            df_sorted = df.sort_values('timestamp')
+            charts['response_time_trend'] = {
+                'type': 'scatter',
+                'data': {
+                    'x': df_sorted['timestamp'].tolist(),
+                    'y': df_sorted['response_time'].tolist(),
+                    'mode': 'lines+markers',
+                    'name': 'Response Time Trend',
+                    'line': {'width': 3, 'color': '#3b82f6'},
+                    'marker': {'size': 4, 'color': '#1d4ed8'}
+                },
+                'layout': {
+                    'title': {'text': 'Response Time Over Time', 'font': {'size': 20, 'color': '#1f2937'}},
+                    'xaxis': {'title': 'Time', 'gridcolor': '#e5e7eb'},
+                    'yaxis': {'title': 'Response Time (ms)', 'gridcolor': '#e5e7eb'},
+                    'plot_bgcolor': '#ffffff',
+                    'paper_bgcolor': '#ffffff',
+                    'hovermode': 'x unified'
+                }
+            }
+        
+        # Error Rate Analysis (3D Pie Chart)
+        if 'status_code' in df.columns:
+            error_counts = df['status_code'].value_counts()
+            charts['error_analysis'] = {
+                'type': 'pie',
+                'data': {
+                    'labels': [f'{code} ({count})' for code, count in error_counts.items()],
+                    'values': error_counts.values.tolist(),
+                    'name': 'Status Code Distribution',
+                    'hole': 0.4,
+                    'marker': {
+                        'colors': ['#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'],
+                        'line': {'color': '#ffffff', 'width': 2}
+                    }
+                },
+                'layout': {
+                    'title': {'text': 'Status Code Distribution', 'font': {'size': 20, 'color': '#1f2937'}},
+                    'height': 500,
+                    'showlegend': True,
+                    'legend': {'orientation': 'h', 'x': 0.5, 'y': -0.1}
+                }
+            }
+        
+        # Performance Metrics Dashboard (Gauge Charts)
+        if metrics:
+            charts['performance_gauges'] = {
+                'type': 'indicator',
+                'data': [
+                    {
+                        'type': 'indicator',
+                        'mode': 'gauge+number+delta',
+                        'value': metrics.get('avg_response_time', 0),
+                        'title': {'text': 'Avg Response Time (ms)', 'font': {'size': 16}},
+                        'delta': {'reference': metrics.get('target_response_time', 100)},
+                        'gauge': {
+                            'axis': {'range': [None, metrics.get('max_response_time', 1000)]},
+                            'bar': {'color': '#3b82f6'},
+                            'bgcolor': '#f3f4f6',
+                            'borderwidth': 2,
+                            'bordercolor': '#1f2937',
+                            'steps': [
+                                {'range': [0, metrics.get('avg_response_time', 0) * 0.5], 'color': '#10b981'},
+                                {'range': [metrics.get('avg_response_time', 0) * 0.5, metrics.get('avg_response_time', 0)], 'color': '#f59e0b'},
+                                {'range': [metrics.get('avg_response_time', 0), metrics.get('max_response_time', 1000)], 'color': '#ef4444'}
+                            ],
+                            'threshold': {
+                                'line': {'color': '#ef4444', 'width': 4},
+                                'thickness': 0.75,
+                                'value': metrics.get('max_response_time', 1000) * 0.8
+                            }
+                        }
+                    },
+                    {
+                        'type': 'indicator',
+                        'mode': 'gauge+number+delta',
+                        'value': metrics.get('error_rate', 0),
+                        'title': {'text': 'Error Rate (%)', 'font': {'size': 16}},
+                        'delta': {'reference': 5},
+                        'gauge': {
+                            'axis': {'range': [None, 100]},
+                            'bar': {'color': '#ef4444'},
+                            'bgcolor': '#f3f4f6',
+                            'borderwidth': 2,
+                            'bordercolor': '#1f2937',
+                            'steps': [
+                                {'range': [0, 5], 'color': '#10b981'},
+                                {'range': [5, 10], 'color': '#f59e0b'},
+                                {'range': [10, 100], 'color': '#ef4444'}
+                            ],
+                            'threshold': {
+                                'line': {'color': '#ef4444', 'width': 4},
+                                'thickness': 0.75,
+                                'value': 10
+                            }
+                        }
+                    }
+                ]
+            }
+        
+        # Throughput Analysis (3D Bar Chart)
+        if 'throughput' in metrics:
+            charts['throughput_analysis'] = {
+                'type': 'bar',
+                'data': {
+                    'x': ['Current', 'Target', 'Peak'],
+                    'y': [metrics.get('throughput', 0), metrics.get('target_throughput', 0), metrics.get('peak_throughput', 0)],
+                    'name': 'Throughput Comparison',
+                    'marker': {
+                        'color': ['#10b981', '#f59e0b', '#ef4444'],
+                        'line': {'color': '#ffffff', 'width': 2}
+                    }
+                },
+                'layout': {
+                    'title': {'text': 'Throughput Analysis', 'font': {'size': 20, 'color': '#1f2937'}},
+                    'xaxis': {'title': 'Metric Type', 'gridcolor': '#e5e7eb'},
+                    'yaxis': {'title': 'Requests/Second', 'gridcolor': '#e5e7eb'},
+                    'plot_bgcolor': '#ffffff',
+                    'paper_bgcolor': '#ffffff',
+                    'bargap': 0.3
+                }
+            }
+        
+        # Anomaly Detection (Scatter Plot with Clusters)
+        if 'anomalies' in analysis_results:
+            anomalies = analysis_results['anomalies']
+            if anomalies and len(anomalies) > 0:
+                normal_indices = [i for i, is_anomaly in enumerate(anomalies) if not is_anomaly]
+                anomaly_indices = [i for i, is_anomaly in enumerate(anomalies) if is_anomaly]
+                
+                charts['anomaly_detection'] = {
+                    'type': 'scatter',
+                    'data': [
+                        {
+                            'x': [df.iloc[i]['response_time'] for i in normal_indices],
+                            'y': [i for i in normal_indices],
+                            'mode': 'markers',
+                            'name': 'Normal Requests',
+                            'marker': {
+                                'color': '#10b981',
+                                'size': 8,
+                                'symbol': 'circle',
+                                'line': {'color': '#ffffff', 'width': 1}
+                            }
+                        },
+                        {
+                            'x': [df.iloc[i]['response_time'] for i in anomaly_indices],
+                            'y': [i for i in anomaly_indices],
+                            'mode': 'markers',
+                            'name': 'Anomalies',
+                            'marker': {
+                                'color': '#ef4444',
+                                'size': 12,
+                                'symbol': 'diamond',
+                                'line': {'color': '#ffffff', 'width': 2}
+                            }
+                        }
+                    ],
+                    'layout': {
+                        'title': {'text': 'Anomaly Detection', 'font': {'size': 20, 'color': '#1f2937'}},
+                        'xaxis': {'title': 'Response Time (ms)', 'gridcolor': '#e5e7eb'},
+                        'yaxis': {'title': 'Request Index', 'gridcolor': '#e5e7eb'},
+                        'plot_bgcolor': '#ffffff',
+                        'paper_bgcolor': '#ffffff',
+                        'showlegend': True
+                    }
+                }
+        
+        # Performance Heatmap
+        if len(df) > 10:
+            # Create time-based heatmap
+            df_sample = df.sample(n=min(100, len(df)))
+            charts['performance_heatmap'] = {
+                'type': 'heatmap',
+                'data': {
+                    'z': [df_sample['response_time'].tolist()],
+                    'x': list(range(len(df_sample))),
+                    'y': ['Response Time'],
+                    'colorscale': 'Viridis',
+                    'showscale': True
+                },
+                'layout': {
+                    'title': {'text': 'Performance Heatmap', 'font': {'size': 20, 'color': '#1f2937'}},
+                    'xaxis': {'title': 'Request Index'},
+                    'yaxis': {'title': 'Metrics'},
+                    'plot_bgcolor': '#ffffff',
+                    'paper_bgcolor': '#ffffff'
+                }
+            }
+        
+        # Performance Trends (Multi-line Chart with Confidence Intervals)
+        if len(df) > 10:
+            df_sample = df.sample(n=min(50, len(df))).sort_values('timestamp' if 'timestamp' in df.columns else df.index)
+            
+            # Calculate moving average and standard deviation
+            moving_avg = df_sample['response_time'].rolling(window=5).mean()
+            std_dev = df_sample['response_time'].rolling(window=5).std()
+            
+            charts['performance_trends'] = {
+                'type': 'scatter',
+                'data': [
+                    {
+                        'x': df_sample.index.tolist(),
+                        'y': df_sample['response_time'].tolist(),
+                        'mode': 'lines+markers',
+                        'name': 'Response Time',
+                        'line': {'color': '#3b82f6', 'width': 2},
+                        'marker': {'size': 4}
+                    },
+                    {
+                        'x': df_sample.index.tolist(),
+                        'y': moving_avg.tolist(),
+                        'mode': 'lines',
+                        'name': 'Moving Average',
+                        'line': {'color': '#10b981', 'dash': 'dash', 'width': 3}
+                    },
+                    {
+                        'x': df_sample.index.tolist(),
+                        'y': (moving_avg + std_dev).tolist(),
+                        'mode': 'lines',
+                        'name': 'Upper Bound',
+                        'line': {'color': '#f59e0b', 'dash': 'dot', 'width': 1},
+                        'showlegend': False
+                    },
+                    {
+                        'x': df_sample.index.tolist(),
+                        'y': (moving_avg - std_dev).tolist(),
+                        'mode': 'lines',
+                        'name': 'Lower Bound',
+                        'line': {'color': '#f59e0b', 'dash': 'dot', 'width': 1},
+                        'fill': 'tonexty',
+                        'fillcolor': 'rgba(245, 158, 11, 0.1)',
+                        'showlegend': False
+                    }
+                ],
+                'layout': {
+                    'title': {'text': 'Performance Trends with Confidence Intervals', 'font': {'size': 20, 'color': '#1f2937'}},
+                    'xaxis': {'title': 'Request Index', 'gridcolor': '#e5e7eb'},
+                    'yaxis': {'title': 'Response Time (ms)', 'gridcolor': '#e5e7eb'},
+                    'plot_bgcolor': '#ffffff',
+                    'paper_bgcolor': '#ffffff',
+                    'showlegend': True,
+                    'hovermode': 'x unified'
+                }
+            }
+        
+        # Percentile Analysis (Box Plot)
+        if 'response_time' in df.columns:
+            charts['percentile_analysis'] = {
+                'type': 'box',
+                'data': {
+                    'y': df['response_time'].dropna().tolist(),
+                    'name': 'Response Time Distribution',
+                    'boxpoints': 'outliers',
+                    'marker': {'color': '#8b5cf6'},
+                    'line': {'color': '#1f2937'}
+                },
+                'layout': {
+                    'title': {'text': 'Response Time Percentiles', 'font': {'size': 20, 'color': '#1f2937'}},
+                    'yaxis': {'title': 'Response Time (ms)', 'gridcolor': '#e5e7eb'},
+                    'plot_bgcolor': '#ffffff',
+                    'paper_bgcolor': '#ffffff'
+                }
+            }
+        
+        return charts
+        
+    except Exception as e:
+        print(f"Error generating charts: {e}")
+        return {}
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
