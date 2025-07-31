@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perf Pulse - Smart Test Insight Generator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #667eea;
+            --secondary-color: #764ba2;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --danger-color: #dc3545;
+            --dark-color: #343a40;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .navbar-brand {
+            font-weight: bold;
+            font-size: 1.5rem;
+        }
+
+        .hero-section {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 3rem;
+            margin: 2rem 0;
+            text-align: center;
+            color: white;
+        }
+
+        .card {
+            border: none;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+        }
+
+        .metric-card {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+            border-radius: 15px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+        }
+
+        .upload-area {
+            border: 3px dashed #ddd;
+            border-radius: 15px;
+            padding: 3rem;
+            text-align: center;
+            background: rgba(255, 255, 255, 0.05);
+            transition: all 0.3s ease;
+        }
+
+        .upload-area:hover {
+            border-color: var(--primary-color);
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .upload-area.dragover {
+            border-color: var(--success-color);
+            background: rgba(40, 167, 69, 0.1);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            border: none;
+            border-radius: 25px;
+            padding: 0.75rem 2rem;
+            font-weight: bold;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .progress-bar {
+            border-radius: 10px;
+            height: 10px;
+        }
+
+        .chart-container {
+            background: white;
+            border-radius: 15px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .loading {
+            display: none;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid var(--primary-color);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .nav-tabs .nav-link {
+            border: none;
+            border-radius: 25px;
+            margin: 0 0.25rem;
+            color: var(--dark-color);
+        }
+
+        .nav-tabs .nav-link.active {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+        }
+
+        .alert {
+            border-radius: 15px;
+            border: none;
+        }
+
+        .table {
+            border-radius: 15px;
+            overflow: hidden;
+        }
+
+        .table th {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-chart-line me-2"></i>
+                Perf Pulse
+            </a>
+            <div class="navbar-nav ms-auto">
+                <span class="navbar-text">
+                    <i class="fas fa-user me-2"></i>
+                    Smart Test Insight Generator
+                </span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <!-- Hero Section -->
+        <div class="hero-section">
+            <h1 class="display-4 mb-3">
+                <i class="fas fa-rocket me-3"></i>
+                Perf Pulse
+            </h1>
+            <p class="lead mb-4">Advanced Performance Testing Analysis & Report Generation</p>
+            <div class="row">
+                <div class="col-md-3">
+                    <div class="metric-card text-center">
+                        <i class="fas fa-tachometer-alt fa-2x mb-2"></i>
+                        <h3 id="totalTests">0</h3>
+                        <p>Total Tests</p>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="metric-card text-center">
+                        <i class="fas fa-check-circle fa-2x mb-2"></i>
+                        <h3 id="successRate">0%</h3>
+                        <p>Success Rate</p>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="metric-card text-center">
+                        <i class="fas fa-clock fa-2x mb-2"></i>
+                        <h3 id="avgResponse">0ms</h3>
+                        <p>Avg Response</p>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="metric-card text-center">
+                        <i class="fas fa-exclamation-triangle fa-2x mb-2"></i>
+                        <h3 id="errorRate">0%</h3>
+                        <p>Error Rate</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-body">
+                        <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active" id="dashboard-tab" data-bs-toggle="tab" data-bs-target="#dashboard" type="button" role="tab">
+                                    <i class="fas fa-tachometer-alt me-2"></i>Dashboard
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="analysis-tab" data-bs-toggle="tab" data-bs-target="#analysis" type="button" role="tab">
+                                    <i class="fas fa-chart-bar me-2"></i>Performance Analysis
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs" type="button" role="tab">
+                                    <i class="fas fa-file-alt me-2"></i>Log Analysis
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports" type="button" role="tab">
+                                    <i class="fas fa-file-pdf me-2"></i>Reports
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings" type="button" role="tab">
+                                    <i class="fas fa-cog me-2"></i>Settings
+                                </button>
+                            </li>
+                        </ul>
+
+                        <div class="tab-content" id="mainTabsContent">
+                            <!-- Dashboard Tab -->
+                            <div class="tab-pane fade show active" id="dashboard" role="tabpanel">
+                                <div class="row mt-4">
+                                    <div class="col-md-8">
+                                        <div class="chart-container">
+                                            <h5><i class="fas fa-chart-line me-2"></i>Performance Overview</h5>
+                                            <div id="performanceChart"></div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="chart-container">
+                                            <h5><i class="fas fa-pie-chart me-2"></i>Response Time Distribution</h5>
+                                            <div id="responseTimeChart"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Performance Analysis Tab -->
+                            <div class="tab-pane fade" id="analysis" role="tabpanel">
+                                <div class="mt-4">
+                                    <div class="upload-area" id="uploadArea">
+                                        <i class="fas fa-cloud-upload-alt fa-3x mb-3 text-muted"></i>
+                                        <h4>Upload Performance Data</h4>
+                                        <p class="text-muted">Drag and drop your CSV, Excel, or JSON files here</p>
+                                        <input type="file" id="fileInput" class="d-none" accept=".csv,.xlsx,.xls,.json">
+                                        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+                                            <i class="fas fa-upload me-2"></i>Choose File
+                                        </button>
+                                    </div>
+
+                                    <div class="loading mt-3" id="loadingAnalysis">
+                                        <div class="spinner"></div>
+                                        <p class="text-center mt-2">Processing data...</p>
+                                    </div>
+
+                                    <div id="analysisResults" class="mt-4" style="display: none;">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <div class="chart-container">
+                                                    <h5><i class="fas fa-chart-bar me-2"></i>Response Time Analysis</h5>
+                                                    <div id="responseTimeAnalysis"></div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="chart-container">
+                                                    <h5><i class="fas fa-exclamation-triangle me-2"></i>Error Analysis</h5>
+                                                    <div id="errorAnalysis"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Log Analysis Tab -->
+                            <div class="tab-pane fade" id="logs" role="tabpanel">
+                                <div class="mt-4">
+                                    <div class="upload-area" id="logUploadArea">
+                                        <i class="fas fa-file-alt fa-3x mb-3 text-muted"></i>
+                                        <h4>Upload Log Files</h4>
+                                        <p class="text-muted">Upload your application log files for analysis</p>
+                                        <input type="file" id="logFileInput" class="d-none" accept=".log,.txt,.csv">
+                                        <button class="btn btn-primary" onclick="document.getElementById('logFileInput').click()">
+                                            <i class="fas fa-upload me-2"></i>Choose Log File
+                                        </button>
+                                    </div>
+
+                                    <div id="logAnalysisResults" class="mt-4" style="display: none;">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <div class="chart-container">
+                                                    <h5><i class="fas fa-chart-pie me-2"></i>Log Level Distribution</h5>
+                                                    <div id="logLevelChart"></div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="chart-container">
+                                                    <h5><i class="fas fa-exclamation-circle me-2"></i>Error Patterns</h5>
+                                                    <div id="errorPatternChart"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Reports Tab -->
+                            <div class="tab-pane fade" id="reports" role="tabpanel">
+                                <div class="mt-4">
+                                    <!-- Single Report Section -->
+                                    <div class="card mb-4">
+                                        <div class="card-body">
+                                            <h5><i class="fas fa-upload me-2"></i>Single Test Report</h5>
+                                            <div class="upload-area" id="reportUploadArea">
+                                                <i class="fas fa-cloud-upload-alt fa-3x mb-3 text-muted"></i>
+                                                <h4>Upload Performance Data</h4>
+                                                <p class="text-muted">Drag and drop your CSV, Excel, or JSON files here</p>
+                                                <input type="file" id="reportFileInput" class="d-none" accept=".csv,.xlsx,.xls,.json">
+                                                <button class="btn btn-primary" onclick="document.getElementById('reportFileInput').click()">
+                                                    <i class="fas fa-upload me-2"></i>Choose File
+                                                </button>
+                                            </div>
+                                            <div id="reportUploadStatus" class="mt-3" style="display: none;">
+                                                <div class="alert alert-info">
+                                                    <i class="fas fa-spinner fa-spin me-2"></i>
+                                                    <span id="reportUploadMessage">Processing data...</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Comparison Report Section -->
+                                    <div class="card mb-4">
+                                        <div class="card-body">
+                                            <h5><i class="fas fa-balance-scale me-2"></i>Comparison Report</h5>
+                                            <div class="row">
+                                                <div class="col-md-6">
+                                                    <h6>Test A (Baseline)</h6>
+                                                    <div class="upload-area" id="comparisonUploadAreaA">
+                                                        <i class="fas fa-file-alt fa-2x mb-2 text-muted"></i>
+                                                        <p class="text-muted">Upload baseline test data</p>
+                                                        <input type="file" id="comparisonFileInputA" class="d-none" accept=".csv,.xlsx,.xls,.json">
+                                                        <button class="btn btn-outline-primary btn-sm" onclick="document.getElementById('comparisonFileInputA').click()">
+                                                            <i class="fas fa-upload me-1"></i>Choose File A
+                                                        </button>
+                                                    </div>
+                                                    <div id="comparisonStatusA" class="mt-2" style="display: none;">
+                                                        <small class="text-success">✅ File A loaded</small>
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <h6>Test B (Comparison)</h6>
+                                                    <div class="upload-area" id="comparisonUploadAreaB">
+                                                        <i class="fas fa-file-alt fa-2x mb-2 text-muted"></i>
+                                                        <p class="text-muted">Upload comparison test data</p>
+                                                        <input type="file" id="comparisonFileInputB" class="d-none" accept=".csv,.xlsx,.xls,.json">
+                                                        <button class="btn btn-outline-primary btn-sm" onclick="document.getElementById('comparisonFileInputB').click()">
+                                                            <i class="fas fa-upload me-1"></i>Choose File B
+                                                        </button>
+                                                    </div>
+                                                    <div id="comparisonStatusB" class="mt-2" style="display: none;">
+                                                        <small class="text-success">✅ File B loaded</small>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="mt-3">
+                                                <button class="btn btn-success" onclick="generateComparisonReport()" id="generateComparisonBtn" disabled>
+                                                    <i class="fas fa-chart-line me-2"></i>Generate Comparison Report
+                                                </button>
+                                                <small class="text-muted d-block mt-2">Upload both files to enable comparison</small>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Report Generation Section -->
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <div class="card">
+                                                <div class="card-body">
+                                                    <h5><i class="fas fa-file-pdf me-2"></i>Generate Reports</h5>
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Report Type</label>
+                                                        <select class="form-select" id="reportType">
+                                                            <option value="executive">Executive Summary</option>
+                                                            <option value="detailed">Detailed Analysis</option>
+                                                            <option value="trends">Trends Report</option>
+                                                        </select>
+                                                    </div>
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Format</label>
+                                                        <select class="form-select" id="reportFormat">
+                                                            <option value="pdf">PDF</option>
+                                                            <option value="excel">Excel</option>
+                                                            <option value="html">HTML</option>
+                                                        </select>
+                                                    </div>
+                                                    <button class="btn btn-primary" onclick="generateReport()" id="generateReportBtn" disabled>
+                                                        <i class="fas fa-download me-2"></i>Generate Report
+                                                    </button>
+                                                    <small class="text-muted d-block mt-2">Upload data first to enable report generation</small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="card">
+                                                <div class="card-body">
+                                                    <h5><i class="fas fa-history me-2"></i>Recent Reports</h5>
+                                                    <div id="recentReports">
+                                                        <p class="text-muted">No reports generated yet</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Settings Tab -->
+                            <div class="tab-pane fade" id="settings" role="tabpanel">
+                                <div class="mt-4">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <div class="card">
+                                                <div class="card-body">
+                                                    <h5><i class="fas fa-cog me-2"></i>Performance Thresholds</h5>
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Response Time Warning (ms)</label>
+                                                        <input type="number" class="form-control" id="warningRT" value="1000">
+                                                    </div>
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Response Time Critical (ms)</label>
+                                                        <input type="number" class="form-control" id="criticalRT" value="3000">
+                                                    </div>
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Error Rate Warning (%)</label>
+                                                        <input type="number" class="form-control" id="warningError" value="5">
+                                                    </div>
+                                                    <div class="mb-3">
+                                                        <label class="form-label">Error Rate Critical (%)</label>
+                                                        <input type="number" class="form-control" id="criticalError" value="10">
+                                                    </div>
+                                                    <button class="btn btn-primary" onclick="saveSettings()">
+                                                        <i class="fas fa-save me-2"></i>Save Settings
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="card">
+                                                <div class="card-body">
+                                                    <h5><i class="fas fa-info-circle me-2"></i>System Information</h5>
+                                                    <p><strong>Version:</strong> Perf Pulse v1.0</p>
+                                                    <p><strong>Backend:</strong> Flask + Python</p>
+                                                    <p><strong>Database:</strong> SQLite</p>
+                                                    <p><strong>Last Updated:</strong> <span id="lastUpdated">Today</span></p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
