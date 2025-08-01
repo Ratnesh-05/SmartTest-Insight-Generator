@@ -57,7 +57,7 @@ function setupFileUploads() {
         
         logFileInput.addEventListener('change', function(e) {
             if (e.target.files.length > 0) {
-                handleFileUpload(e.target.files[0], 'log');
+                handleLogFileUpload(e.target.files[0]);
             }
         });
     }
@@ -129,7 +129,48 @@ function handleFileUpload(file, type) {
         
         if (data.success) {
             showSuccess('File uploaded successfully!');
-            displayResults(data.data, type);
+            
+            // For performance analysis, also call the analyze endpoint
+            if (type === 'performance') {
+                // Convert file to base64 for analysis
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const fileData = e.target.result;
+                    
+                    // Call analysis endpoint
+                    fetch('/api/analyze', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            file_data: fileData
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(analysisData => {
+                        if (analysisData.success) {
+                            // Combine upload data with analysis data
+                            const combinedData = {
+                                ...data.data,
+                                analysis: analysisData.data
+                            };
+                            displayResults(combinedData, type);
+                        } else {
+                            // Fallback to just upload data
+                            displayResults(data.data, type);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Analysis failed:', error);
+                        // Fallback to just upload data
+                        displayResults(data.data, type);
+                    });
+                };
+                reader.readAsDataURL(file);
+            } else {
+                displayResults(data.data, type);
+            }
         } else {
             showError(data.error || 'Upload failed');
         }
@@ -213,7 +254,10 @@ function handleComparisonFileUpload(file, testType) {
             if (!window.comparisonData) {
                 window.comparisonData = {};
             }
-            window.comparisonData[testType] = data.data;
+            window.comparisonData[testType] = {
+                file_id: data.file_id,
+                data: data.data
+            };
             
             statusElement.innerHTML = `<small class="text-success">✅ File ${testType} loaded (${data.data.total_records} records)</small>`;
             
@@ -229,6 +273,89 @@ function handleComparisonFileUpload(file, testType) {
         showError('Upload failed: ' + error.message);
         console.error('Upload error:', error);
     });
+}
+
+function handleLogFileUpload(file) {
+    console.log('Uploading log file:', file.name);
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    // Show loading
+    showLoading('Analyzing log file...');
+    
+    // Upload to log analysis endpoint
+    fetch('/api/logs/analyze', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        hideLoading();
+        
+        if (data.success) {
+            showSuccess('Log analysis completed successfully!');
+            
+            // Display log analysis results
+            displayLogResults(data.data);
+        } else {
+            showError(data.error || 'Log analysis failed');
+        }
+    })
+    .catch(error => {
+        hideLoading();
+        showError('Log analysis failed: ' + error.message);
+        console.error('Log analysis error:', error);
+    });
+}
+
+function displayLogResults(logData) {
+    const resultsDiv = document.getElementById('logAnalysisResults');
+    if (resultsDiv) {
+        resultsDiv.style.display = 'block';
+        
+        let html = '<h4>📊 Log Analysis Results</h4>';
+        
+        // Error Analysis
+        if (logData.error_analysis) {
+            html += '<div class="mb-3"><h5>🚨 Error Analysis</h5>';
+            html += '<ul class="list-group">';
+            for (const [error, count] of Object.entries(logData.error_analysis)) {
+                html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                    ${error} <span class="badge bg-danger rounded-pill">${count}</span>
+                </li>`;
+            }
+            html += '</ul></div>';
+        }
+        
+        // Performance Analysis
+        if (logData.performance_analysis) {
+            html += '<div class="mb-3"><h5>⚡ Performance Analysis</h5>';
+            html += '<ul class="list-group">';
+            for (const [metric, value] of Object.entries(logData.performance_analysis)) {
+                html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                    ${metric} <span class="badge bg-info rounded-pill">${value}</span>
+                </li>`;
+            }
+            html += '</ul></div>';
+        }
+        
+        // Summary
+        if (logData.summary) {
+            html += '<div class="mb-3"><h5>📋 Summary</h5>';
+            html += '<ul class="list-group">';
+            for (const [key, value] of Object.entries(logData.summary)) {
+                html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                    ${key} <span class="badge bg-secondary rounded-pill">${value}</span>
+                </li>`;
+            }
+            html += '</ul></div>';
+        }
+        
+        html += `<p class="text-muted">Total log entries analyzed: ${logData.total_entries || 0}</p>`;
+        
+        resultsDiv.innerHTML = html;
+    }
 }
 
 function checkComparisonReady() {
@@ -247,14 +374,14 @@ function generateComparisonReport() {
     
     showLoading('Generating comparison report...');
     
-    fetch('/api/reports/comparison', {
+    fetch('/api/reports/comparison-by-id', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-            file_a_path: window.comparisonData.A.file_path,
-            file_b_path: window.comparisonData.B.file_path,
+            file_a_id: window.comparisonData.A.file_id,
+            file_b_id: window.comparisonData.B.file_id,
             format: 'pdf'
         })
     })
@@ -293,14 +420,22 @@ function displayResults(data, type) {
         if (resultsDiv) {
             resultsDiv.style.display = 'block';
             
+            // Clear previous content
+            resultsDiv.innerHTML = '';
+            
             // Display metrics
             if (data.metrics) {
                 displayMetrics(data.metrics);
             }
             
-            // Display charts
-            if (data.preview && data.preview.length > 0) {
-                displayCharts(data.preview);
+            // Display analysis data (trends, anomalies, insights)
+            if (data.analysis) {
+                displayAnalysisData(data.analysis);
+            }
+            
+            // Generate and display performance charts
+            if (data.analysis) {
+                displayPerformanceCharts(data.analysis, data.metrics);
             }
         }
     } else if (type === 'log') {
@@ -324,6 +459,183 @@ function displayMetrics(metrics) {
         updateMetric('totalRequests', metrics.errors.total_requests);
         updateMetric('errorRate', metrics.errors.error_rate + '%');
     }
+}
+
+function displayAnalysisData(analysisData) {
+    const resultsDiv = document.getElementById('analysisResults');
+    if (!resultsDiv) return;
+    
+    // Create analysis section
+    let analysisHTML = '<div class="analysis-section mt-4">';
+    analysisHTML += '<h4>📊 Performance Analysis Results</h4>';
+    
+    // Display Trends
+    if (analysisData.trends && Object.keys(analysisData.trends).length > 0) {
+        analysisHTML += '<div class="mb-3"><h5>📈 Trends</h5><div class="row">';
+        
+        if (analysisData.trends.response_time_trend) {
+            const trend = analysisData.trends.response_time_trend;
+            analysisHTML += '<div class="col-md-6"><div class="card"><div class="card-body">';
+            analysisHTML += '<h6>Response Time Trend</h6>';
+            analysisHTML += `<p><strong>Direction:</strong> <span class="badge bg-info">${trend.trend_direction || 'N/A'}</span></p>`;
+            if (trend.daily_pattern) {
+                analysisHTML += '<p><strong>Daily Pattern:</strong> Available</p>';
+            }
+            if (trend.hourly_pattern) {
+                analysisHTML += '<p><strong>Hourly Pattern:</strong> Available</p>';
+            }
+            analysisHTML += '</div></div></div>';
+        }
+        
+        if (analysisData.trends.error_rate_trend) {
+            analysisHTML += '<div class="col-md-6"><div class="card"><div class="card-body">';
+            analysisHTML += '<h6>Error Rate Trend</h6>';
+            analysisHTML += '<p><strong>Pattern:</strong> <span class="badge bg-warning">Analyzed</span></p>';
+            analysisHTML += '</div></div></div>';
+        }
+        
+        analysisHTML += '</div></div>';
+    }
+    
+    // Display Anomalies
+    if (analysisData.anomalies && Object.keys(analysisData.anomalies).length > 0) {
+        analysisHTML += '<div class="mb-3"><h5>🚨 Anomalies</h5><div class="row">';
+        
+        if (analysisData.anomalies.anomaly_count !== undefined) {
+            analysisHTML += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+            analysisHTML += `<h6>Anomalies Detected</h6><h3 class="text-warning">${analysisData.anomalies.anomaly_count}</h3>`;
+            analysisHTML += '</div></div></div>';
+        }
+        
+        if (analysisData.anomalies.anomaly_percentage !== undefined) {
+            analysisHTML += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+            analysisHTML += `<h6>Anomaly Percentage</h6><h3 class="text-danger">${analysisData.anomalies.anomaly_percentage}%</h3>`;
+            analysisHTML += '</div></div></div>';
+        }
+        
+        if (analysisData.anomalies.anomaly_indices) {
+            analysisHTML += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+            analysisHTML += `<h6>Data Points</h6><h3 class="text-info">${analysisData.anomalies.anomaly_indices.length}</h3>`;
+            analysisHTML += '</div></div></div>';
+        }
+        
+        analysisHTML += '</div></div>';
+    }
+    
+    // Display Insights
+    if (analysisData.insights && Object.keys(analysisData.insights).length > 0) {
+        analysisHTML += '<div class="mb-3"><h5>💡 Insights</h5><div class="row">';
+        
+        for (const [insight, details] of Object.entries(analysisData.insights)) {
+            analysisHTML += '<div class="col-md-6"><div class="card"><div class="card-body">';
+            analysisHTML += `<h6>${insight.replace(/_/g, ' ').toUpperCase()}</h6>`;
+            if (Array.isArray(details)) {
+                analysisHTML += '<ul class="list-unstyled">';
+                details.forEach(item => {
+                    analysisHTML += `<li><i class="fas fa-check text-success"></i> ${item}</li>`;
+                });
+                analysisHTML += '</ul>';
+            } else {
+                analysisHTML += `<p>${details}</p>`;
+            }
+            analysisHTML += '</div></div></div>';
+        }
+        
+        analysisHTML += '</div></div>';
+    }
+    
+    analysisHTML += '</div>';
+    
+    // Insert analysis data at the top of results
+    resultsDiv.insertAdjacentHTML('afterbegin', analysisHTML);
+}
+
+function displayPerformanceCharts(analysisData, metrics) {
+    const resultsDiv = document.getElementById('analysisResults');
+    if (!resultsDiv) return;
+    
+    // Create charts section
+    let chartsHTML = '<div class="charts-section mt-4">';
+    chartsHTML += '<h4>📊 Performance Charts</h4>';
+    
+    // Response Time Chart
+    if (metrics && metrics.response_time) {
+        chartsHTML += '<div class="mb-3"><h5>⏱️ Response Time Analysis</h5>';
+        chartsHTML += '<div class="row">';
+        chartsHTML += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        chartsHTML += `<h6>Average Response Time</h6><h3 class="text-primary">${metrics.response_time.mean.toFixed(2)}ms</h3>`;
+        chartsHTML += '</div></div></div>';
+        chartsHTML += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        chartsHTML += `<h6>P95 Response Time</h6><h3 class="text-warning">${metrics.response_time.p95.toFixed(2)}ms</h3>`;
+        chartsHTML += '</div></div></div>';
+        chartsHTML += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        chartsHTML += `<h6>Max Response Time</h6><h3 class="text-danger">${metrics.response_time.max.toFixed(2)}ms</h3>`;
+        chartsHTML += '</div></div></div>';
+        chartsHTML += '</div></div>';
+    }
+    
+    // Error Rate Chart
+    if (metrics && metrics.errors) {
+        chartsHTML += '<div class="mb-3"><h5>❌ Error Analysis</h5>';
+        chartsHTML += '<div class="row">';
+        chartsHTML += '<div class="col-md-6"><div class="card"><div class="card-body text-center">';
+        chartsHTML += `<h6>Total Requests</h6><h3 class="text-info">${metrics.errors.total_requests}</h3>`;
+        chartsHTML += '</div></div></div>';
+        chartsHTML += '<div class="col-md-6"><div class="card"><div class="card-body text-center">';
+        chartsHTML += `<h6>Error Rate</h6><h3 class="text-danger">${metrics.errors.error_rate.toFixed(2)}%</h3>`;
+        chartsHTML += '</div></div></div>';
+        chartsHTML += '</div></div>';
+    }
+    
+    // Trends Visualization
+    if (analysisData.trends) {
+        chartsHTML += '<div class="mb-3"><h5>📈 Performance Trends</h5>';
+        chartsHTML += '<div class="row">';
+        
+        if (analysisData.trends.response_time_trend) {
+            const trend = analysisData.trends.response_time_trend;
+            chartsHTML += '<div class="col-md-6"><div class="card"><div class="card-body">';
+            chartsHTML += '<h6>Response Time Trend</h6>';
+            chartsHTML += `<p><strong>Direction:</strong> ${trend.trend_direction || 'N/A'}</p>`;
+            if (trend.daily_pattern) {
+                chartsHTML += '<p><strong>Daily Pattern:</strong> Available</p>';
+            }
+            if (trend.hourly_pattern) {
+                chartsHTML += '<p><strong>Hourly Pattern:</strong> Available</p>';
+            }
+            chartsHTML += '</div></div></div>';
+        }
+        
+        if (analysisData.trends.error_rate_trend) {
+            chartsHTML += '<div class="col-md-6"><div class="card"><div class="card-body">';
+            chartsHTML += '<h6>Error Rate Trend</h6>';
+            chartsHTML += '<p><strong>Pattern:</strong> Analyzed</p>';
+            chartsHTML += '</div></div></div>';
+        }
+        
+        chartsHTML += '</div></div>';
+    }
+    
+    // Anomalies Visualization
+    if (analysisData.anomalies) {
+        chartsHTML += '<div class="mb-3"><h5>🚨 Anomaly Detection</h5>';
+        chartsHTML += '<div class="row">';
+        chartsHTML += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        chartsHTML += `<h6>Anomalies Detected</h6><h3 class="text-warning">${analysisData.anomalies.anomaly_count || 0}</h3>`;
+        chartsHTML += '</div></div></div>';
+        chartsHTML += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        chartsHTML += `<h6>Anomaly Percentage</h6><h3 class="text-danger">${analysisData.anomalies.anomaly_percentage || 0}%</h3>`;
+        chartsHTML += '</div></div></div>';
+        chartsHTML += '<div class="col-md-4"><div class="card"><div class="card-body text-center">';
+        chartsHTML += `<h6>Data Points</h6><h3 class="text-info">${analysisData.anomalies.anomaly_indices ? analysisData.anomalies.anomaly_indices.length : 0}</h3>`;
+        chartsHTML += '</div></div></div>';
+        chartsHTML += '</div></div>';
+    }
+    
+    chartsHTML += '</div>';
+    
+    // Add charts section to results
+    resultsDiv.insertAdjacentHTML('beforeend', chartsHTML);
 }
 
 function displayCharts(data) {

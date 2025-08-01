@@ -62,10 +62,16 @@ def upload_file():
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
         
+        # Generate unique filename to avoid conflicts
+        import uuid
+        original_filename = file.filename
+        file_extension = os.path.splitext(original_filename)[1]
+        unique_filename = f"{uuid.uuid4().hex}{file_extension}"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        
         # Save uploaded file
-        filename = file.filename
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
+        file_size = os.path.getsize(filepath)
         
         # Process the file
         processor = PerformanceDataProcessor()
@@ -74,9 +80,6 @@ def upload_file():
         
         # Get data summary
         summary = processor.get_data_summary()
-        
-        # Clean up uploaded file
-        os.remove(filepath)
         
         # Convert DataFrame to JSON-serializable format
         preview_data = []
@@ -94,17 +97,116 @@ def upload_file():
                 return [convert_to_serializable(item) for item in obj]
             elif pd.isna(obj):
                 return None
+            elif hasattr(obj, 'dtype'):  # Handle pandas/numpy dtypes
+                return str(obj)
+            elif hasattr(obj, 'item'):  # Handle numpy scalars
+                return obj.item()
             elif isinstance(obj, (int, float, str, bool)):
                 return obj
             else:
                 return str(obj)
         
         serializable_metrics = convert_to_serializable(metrics)
-        serializable_summary = convert_to_serializable(summary)
+        
+        # Handle summary data more carefully to avoid DateTime64DType issues
+        def safe_convert_summary(summary_data):
+            if isinstance(summary_data, dict):
+                safe_summary = {}
+                for key, value in summary_data.items():
+                    if key == 'data_types':
+                        # Convert pandas dtypes to strings
+                        safe_summary[key] = {k: str(v) for k, v in value.items()}
+                    else:
+                        safe_summary[key] = convert_to_serializable(value)
+                return safe_summary
+            else:
+                return convert_to_serializable(summary_data)
+        
+        serializable_summary = safe_convert_summary(summary)
+        
+        # Store file information in database
+        from models import UploadedFile, init_database
+        import json
+        
+        SessionLocal = init_database()
+        db = SessionLocal()
+        
+        try:
+            # Create database record
+            uploaded_file = UploadedFile(
+                filename=unique_filename,
+                original_filename=original_filename,
+                file_path=filepath,
+                file_size=file_size,
+                file_type=file_extension[1:],  # Remove the dot
+                processed=True,
+                total_records=len(df),
+                metrics_json=json.dumps(serializable_metrics),
+                summary_json=json.dumps(serializable_summary)
+            )
+            
+            db.add(uploaded_file)
+            db.commit()
+            db.refresh(uploaded_file)
+            
+            file_id = uploaded_file.id
+            
+        except Exception as e:
+            db.rollback()
+            # Clean up file if database save fails
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            raise e
+        finally:
+            db.close()
+        
+        # Convert DataFrame to JSON-serializable format
+        preview_data = []
+        for _, row in df.head(10).iterrows():
+            preview_data.append({
+                col: str(val) if pd.isna(val) else val 
+                for col, val in row.items()
+            })
+        
+        # Convert metrics to JSON-serializable format
+        def convert_to_serializable(obj):
+            if isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(item) for item in obj]
+            elif pd.isna(obj):
+                return None
+            elif hasattr(obj, 'dtype'):  # Handle pandas/numpy dtypes
+                return str(obj)
+            elif hasattr(obj, 'item'):  # Handle numpy scalars
+                return obj.item()
+            elif isinstance(obj, (int, float, str, bool)):
+                return obj
+            else:
+                return str(obj)
+        
+        serializable_metrics = convert_to_serializable(metrics)
+        
+        # Handle summary data more carefully to avoid DateTime64DType issues
+        def safe_convert_summary(summary_data):
+            if isinstance(summary_data, dict):
+                safe_summary = {}
+                for key, value in summary_data.items():
+                    if key == 'data_types':
+                        # Convert pandas dtypes to strings
+                        safe_summary[key] = {k: str(v) for k, v in value.items()}
+                    else:
+                        safe_summary[key] = convert_to_serializable(value)
+                return safe_summary
+            else:
+                return convert_to_serializable(summary_data)
+        
+        serializable_summary = safe_convert_summary(summary)
         
         return jsonify({
             'success': True,
             'message': f'Successfully processed {len(df)} records',
+            'file_id': file_id,
             'data': {
                 'metrics': serializable_metrics,
                 'summary': serializable_summary,
@@ -128,7 +230,19 @@ def analyze_performance():
         
         # Create temporary file from base64 data
         file_content = base64.b64decode(file_data.split(',')[1])
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp_file:
+        
+        # Determine file extension from the data URL
+        data_url = file_data.split(',')[0]
+        if 'csv' in data_url:
+            file_extension = '.csv'
+        elif 'json' in data_url:
+            file_extension = '.json'
+        elif 'xlsx' in data_url or 'excel' in data_url:
+            file_extension = '.xlsx'
+        else:
+            file_extension = '.xlsx'  # Default to Excel
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
             tmp_file.write(file_content)
             tmp_file_path = tmp_file.name
         
@@ -440,6 +554,120 @@ def generate_report():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/reports/comparison-by-id', methods=['POST'])
+def generate_comparison_report_by_id():
+    """Generate comparison report using file IDs from database"""
+    try:
+        data = request.get_json()
+        file_a_id = data.get('file_a_id')
+        file_b_id = data.get('file_b_id')
+        report_format = data.get('format', 'pdf')
+        
+        if not file_a_id or not file_b_id:
+            return jsonify({'error': 'Both file IDs are required for comparison'}), 400
+        
+        # Get files from database
+        from models import UploadedFile, init_database
+        
+        SessionLocal = init_database()
+        db = SessionLocal()
+        
+        try:
+            file_a = db.query(UploadedFile).filter(
+                UploadedFile.id == file_a_id,
+                UploadedFile.is_active == True
+            ).first()
+            
+            file_b = db.query(UploadedFile).filter(
+                UploadedFile.id == file_b_id,
+                UploadedFile.is_active == True
+            ).first()
+            
+            if not file_a or not file_b:
+                return jsonify({'error': 'One or both files not found in database'}), 404
+            
+            # Check if files exist on disk
+            if not os.path.exists(file_a.file_path):
+                return jsonify({'error': f'File A not found on disk: {file_a.original_filename}'}), 404
+                
+            if not os.path.exists(file_b.file_path):
+                return jsonify({'error': f'File B not found on disk: {file_b.original_filename}'}), 404
+            
+            # Process both files
+            processor = PerformanceDataProcessor()
+            
+            # Load data from both files
+            df_a = processor.load_test_data(file_a.file_path)
+            metrics_a = processor.calculate_basic_metrics()
+            
+            processor_b = PerformanceDataProcessor()
+            df_b = processor_b.load_test_data(file_b.file_path)
+            metrics_b = processor_b.calculate_basic_metrics()
+            
+            # Convert metrics to ensure numeric values and flatten structure
+            def convert_metrics(metrics):
+                """Convert metrics to ensure all values are numeric and flatten structure"""
+                converted = {}
+                for key, value in metrics.items():
+                    if isinstance(value, dict):
+                        # Flatten nested metrics
+                        for sub_key, sub_value in value.items():
+                            flat_key = f"{key}_{sub_key}"
+                            try:
+                                converted[flat_key] = float(sub_value) if sub_value is not None else 0.0
+                            except (ValueError, TypeError):
+                                converted[flat_key] = 0.0
+                    else:
+                        try:
+                            converted[key] = float(value) if value is not None else 0.0
+                        except (ValueError, TypeError):
+                            converted[key] = 0.0
+                return converted
+            
+            metrics_a_converted = convert_metrics(metrics_a)
+            metrics_b_converted = convert_metrics(metrics_b)
+            
+            # Generate comparison analysis
+            comparison_data = {
+                'test_a': {
+                    'name': file_a.original_filename,
+                    'metrics': metrics_a_converted,
+                    'data_summary': processor.get_data_summary()
+                },
+                'test_b': {
+                    'name': file_b.original_filename,
+                    'metrics': metrics_b_converted,
+                    'data_summary': processor_b.get_data_summary()
+                },
+                'comparison': {
+                    'response_time_diff': metrics_a_converted.get('response_time_mean', 0) - metrics_b_converted.get('response_time_mean', 0),
+                    'error_rate_diff': metrics_a_converted.get('errors_error_rate', 0) - metrics_b_converted.get('errors_error_rate', 0),
+                    'throughput_diff': metrics_a_converted.get('throughput_mean', 0) - metrics_b_converted.get('throughput_mean', 0),
+                    'improvement_percentage': calculate_improvement_percentage(metrics_a_converted, metrics_b_converted)
+                }
+            }
+            
+            if report_format == 'pdf':
+                # Generate PDF comparison report
+                pdf_content = create_comparison_pdf_report(comparison_data)
+                
+                response = send_file(
+                    io.BytesIO(pdf_content),
+                    mimetype='application/pdf',
+                    as_attachment=True,
+                    download_name=f'comparison_{file_a.original_filename}_vs_{file_b.original_filename}.pdf'
+                )
+                return response
+                
+            else:
+                return jsonify({'error': 'Unsupported format'}), 400
+                
+        finally:
+            db.close()
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/reports/comparison', methods=['POST'])
 def generate_comparison_report():
     """Generate comparison report between two test runs"""
@@ -452,8 +680,14 @@ def generate_comparison_report():
         if not file_a_path or not file_b_path:
             return jsonify({'error': 'Both files are required for comparison'}), 400
         
+        # Check if files exist, if not, try to find them in upload folder
+        if not os.path.exists(file_a_path):
+            file_a_path = os.path.join(app.config['UPLOAD_FOLDER'], os.path.basename(file_a_path))
+        if not os.path.exists(file_b_path):
+            file_b_path = os.path.join(app.config['UPLOAD_FOLDER'], os.path.basename(file_b_path))
+            
         if not os.path.exists(file_a_path) or not os.path.exists(file_b_path):
-            return jsonify({'error': 'One or both files not found'}), 404
+            return jsonify({'error': 'One or both files not found. Please upload files first.'}), 404
         
         # Process both files
         processor = PerformanceDataProcessor()
